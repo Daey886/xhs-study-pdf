@@ -1,0 +1,52 @@
+# ===== 敏感凭证:Cookie 文件严禁提交(含备份)=====
+cookies.json
+cookies.json.bak
+web_frontend/cookies.json
+web_frontend/data/cookies.json
+core_engine/cookies.json
+core_engine/cookies.json.bak
+*.cookies.json.bak
+
+# ===== 运行时生成物:用户下载的 PDF/ZIP 与笔记缓存 =====
+web_frontend/downloads/
+web_frontend/data/note_cache/
+core_engine/Volume/
+core_engine/output/
+
+# ===== 临时图片/缓存/日志 =====
+temp_*.jpg
+temp_*.jpeg
+temp_*.png
+*.log
+*.pid
+
+# ===== Python 编译产物与虚拟环境 =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+venv/
+.venv/
+env/
+ENV/
+
+# ===== 依赖与前端构建产物 =====
+node_modules/
+dist/
+build/
+*.egg-info/
+
+# ===== 环境变量与本地配置 =====
+.env
+.env.*
+!.env.example
+*.local
+
+# ===== 编辑器 / 系统文件 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.dbcore_engine/
