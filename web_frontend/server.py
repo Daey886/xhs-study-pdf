@@ -828,6 +828,21 @@ HTML_PAGE = """
         <div id="qrPlaceholder" style="width:160px;height:160px;border-radius:8px;margin:0 auto 8px;background:#eee;"></div>
         <div class="qr-desc" id="qrStatusText">请使用小红书 App 扫描上方二维码</div>
     </div>
+    <div style="height:1px;background:#eef1f5;margin:20px 0 16px;"></div>
+    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">手动填入 / 粘贴 Cookie</div>
+    <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-bottom:10px;">
+        扫码超时或被风控时,可直接粘贴浏览器里的 <b>web_session</b> 或完整 Cookie 串(无需扫码)。
+    </div>
+    <textarea id="manualCookieInput" rows="3" placeholder="粘贴 web_session=xxxx 或完整 Cookie: a1=...; web_session=..." style="width:100%;height:70px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:12.5px;resize:vertical;outline:none;background:#f8fafc;box-sizing:border-box;"></textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn-submit" style="background:#fff;color:#2563eb;border:1.5px solid #d6e3f5;flex:1;" onclick="pasteCookie()">📋 一键粘贴</button>
+        <button class="btn-submit" style="flex:1;" onclick="saveManualCookie()">保存并验活</button>
+    </div>
+    <div style="font-size:12px;color:#16a34a;margin-top:10px;display:none;" id="manualCookieResult"></div>
+    <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-top:12px;background:#f8fafc;border-radius:10px;padding:10px 12px;">
+        <b>如何获取 Cookie?</b><br>
+        电脑浏览器登录小红书后,按 F12 打开开发者工具 →「应用/Application」→「Cookies」→ 复制 <b>web_session</b> 的值即可;或复制整段 Cookie 字符串粘贴到上方。
+    </div>
 </div>
 
 <script>
@@ -987,6 +1002,57 @@ function addManualCookie() {
     });
 }
 
+function pasteCookie() {
+    const input = document.getElementById('manualCookieInput');
+    if (!navigator.clipboard || !window.isSecureContext) {
+        showToast('当前环境不支持剪贴板读取,请手动粘贴', true);
+        return;
+    }
+    navigator.clipboard.readText()
+        .then(text => {
+            const cleaned = (text || '').trim();
+            if (!cleaned) { showToast('剪贴板为空', true); return; }
+            // 若用户粘贴的是纯 web_session 值(无 key=),自动补全为 web_session=
+            input.value = cleaned.includes('=') ? cleaned : 'web_session=' + cleaned;
+            showToast('已粘贴,请点击「保存并验活」');
+        })
+        .catch(() => showToast('读取剪贴板失败,请手动 Ctrl+V 粘贴', true));
+}
+
+function saveManualCookie() {
+    const val = document.getElementById('manualCookieInput').value.trim();
+    const resultBox = document.getElementById('manualCookieResult');
+    if (!val) { showToast('请先填入或粘贴 Cookie / web_session', true); return; }
+    const btn = event ? event.target : null;
+    if (btn) { btn.disabled = true; btn.innerText = '验活中...'; }
+    fetch('/api/cookies/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cookie: val})
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (btn) { btn.disabled = false; btn.innerText = '保存并验活'; }
+        if (res.success) {
+            resultBox.style.display = 'block';
+            resultBox.style.color = '#16a34a';
+            resultBox.innerText = '✔ Cookie 验证通过,已持久化保存,重启依然有效';
+            document.getElementById('manualCookieInput').value = '';
+            showToast('✔ Cookie 已保存并通过验活');
+            refreshCookieStatus();
+        } else {
+            resultBox.style.display = 'block';
+            resultBox.style.color = '#dc2626';
+            resultBox.innerText = '✘ 验活失败: ' + (res.error || 'Cookie 无效或已过期,请重新获取');
+            showToast(res.error || 'Cookie 验活失败', true);
+        }
+    })
+    .catch(() => {
+        if (btn) { btn.disabled = false; btn.innerText = '保存并验活'; }
+        showToast('网络请求异常', true);
+    });
+}
+
 // 抽屉交互
 function openDrawer() {
     document.getElementById('drawerOverlay').style.display = 'block';
@@ -1015,7 +1081,9 @@ function getLoginQr() {
         .then(r => r.json())
         .then(data => {
             if (!data.success) {
-                qrText.innerText = '获取失败: ' + (data.error || '接口受限');
+                qrText.innerText = '扫码接口被风控/受限: ' + (data.error || '生成超时') + ',请改用下方「手动填入 Cookie」';
+                document.getElementById('qrPlaceholder').style.display = 'none';
+                showToast('扫码超时或风控拦截,请改用下方「手动粘贴 Cookie」模式', true);
                 return;
             }
             qrImg.src = data.qr_url;
@@ -1625,6 +1693,68 @@ def add_cookie():
     return jsonify({'success': True, 'action': action})
 
 
+def _normalize_cookie_input(raw):
+    """把用户输入归一化为标准 cookie 串。
+
+    支持:
+      - 完整 cookie 串 ("a=1; b=2; web_session=xxx")
+      - 仅 web_session 值 ("xxx" 或 "web_session=xxx")
+      - 浏览器导出的请求头 Cookie 字符串(允许跨行)
+    返回规范化后的 cookie 串;无法解析返回 None。
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    text = raw.strip().strip(';').strip()
+    if not text:
+        return None
+    # 去掉可能的换行与多余空白,统一分号分隔
+    text = re.sub(r'[\r\n]+', ';', text)
+    parts = [p.strip() for p in text.split(';') if p.strip()]
+    pairs = []
+    web_session_val = None
+    for p in parts:
+        if '=' in p:
+            k, _, v = p.partition('=')
+            k = k.strip()
+            if not k:
+                continue
+            pairs.append(f"{k}={v.strip()}")
+            if k == 'web_session':
+                web_session_val = v.strip()
+        else:
+            # 无 '=' 的片段视为 web_session 的值
+            web_session_val = p.strip()
+    if web_session_val and not any(k.startswith('web_session=') for k in pairs):
+        pairs.append(f"web_session={web_session_val}")
+    if not pairs:
+        return None
+    return "; ".join(pairs)
+
+
+@app.route('/api/cookies/save', methods=['POST'])
+def save_cookie():
+    """手动填入/粘贴 Cookie (或仅 web_session),验活成功后持久化保存。
+
+    lan 模式:写入扁平单账号 cookie.json,重启依然有效。
+    public 模式:同样走 upsert_cookie 写入中央池。
+    """
+    data = request.json or {}
+    raw = data.get('cookie', '') or data.get('web_session', '')
+    cookie_str = _normalize_cookie_input(raw)
+    if not cookie_str:
+        return jsonify({'success': False, 'error': 'Cookie 内容为空或格式无法解析'})
+
+    # 先验活:只有真实登录态(含 web_session 且 explore 返回 loggedIn:true)才写入
+    if not verify_cookie_health(cookie_str):
+        return jsonify({
+            'success': False,
+            'error': 'Cookie 验活失败:未检测到登录态,可能已过期或填写有误,请重新获取',
+        })
+
+    action, _ = upsert_cookie(cookie_str)
+    return jsonify({'success': True, 'action': action})
+
+
 def verify_cookie_health(cookie_str):
     # 通过访问用户自省或通知接口核验 Cookie 是否真实有效
     headers = {
@@ -2052,7 +2182,7 @@ def handle_uncaught(e):
         return jsonify({'success': False, 'error': '服务器内部错误,请稍后重试'}), 500
     return handle_500(e)
 
-def _parse_args():
+def _parse_args(args=None):
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -2070,8 +2200,8 @@ def _parse_args():
         help="归档目录(生成的 PDF/ZIP 存放位置),lan 模式推荐指定用户目录",
     )
     parser.add_argument("--host", default="0.0.0.0", help="监听地址(默认 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8088, help="监听端口(默认 8088)")
-    return parser.parse_args()
+    parser.add_argument("--port", type=int, default=5088, help="监听端口(默认 5088)")
+    return parser.parse_args(args)
 
 
 def run():

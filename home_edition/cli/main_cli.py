@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.path.join(os.path.expanduser("~"), "xhs_pdf"),
         help="归档目录 (默认 ~/xhs_pdf)",
     )
-    parser.add_argument("--port", type=int, default=8088, help="Web 服务端口 (默认 8088)")
+    parser.add_argument("--port", type=int, default=5088, help="Web 服务端口 (默认 5088)")
     return parser
 
 

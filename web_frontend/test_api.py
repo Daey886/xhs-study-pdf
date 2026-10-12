@@ -40,25 +40,25 @@ print('candidates:', len(items))
 # 单链接 -> PDF
 u1 = 'https://www.xiaohongshu.com/explore/%s?xsec_token=%s' % items[0]
 print('--- single:', u1[:80])
-resp = requests.post('http://127.0.0.1:8088/api/convert',
+resp = requests.post('http://127.0.0.1:5088/api/convert',
                      json={'text': u1}, timeout=120)
 print('resp:', resp.status_code, resp.text[:300])
 if resp.status_code == 200:
     d = resp.json()
     if d.get('success'):
-        dl = 'http://127.0.0.1:8088' + d['download_url']
+        dl = 'http://127.0.0.1:5088' + d['download_url']
         rr = requests.get(dl, timeout=60)
         print('PDF download:', rr.status_code, len(rr.content), 'bytes, head:', rr.content[:5])
 
 # 多链接 -> ZIP
 urls = ['https://www.xiaohongshu.com/explore/%s?xsec_token=%s' % it for it in items[1:4]]
 print('--- zip with', len(urls), 'links')
-resp2 = requests.post('http://127.0.0.1:8088/api/convert',
+resp2 = requests.post('http://127.0.0.1:5088/api/convert',
                       json={'text': '\n'.join(urls)}, timeout=180)
 print('resp:', resp2.status_code, resp2.text[:300])
 if resp2.status_code == 200:
     d2 = resp2.json()
     if d2.get('success'):
-        dl2 = 'http://127.0.0.1:8088' + d2['download_url']
+        dl2 = 'http://127.0.0.1:5088' + d2['download_url']
         rr2 = requests.get(dl2, timeout=60)
         print('ZIP download:', rr2.status_code, len(rr2.content), 'bytes, head:', rr2.content[:4])

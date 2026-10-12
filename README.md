@@ -90,7 +90,7 @@ pip install playwright && playwright install chromium
 
 ```bash
 # 公网在线版（默认，启用限频）
-python web_frontend/server.py --mode public --port 8088
+python web_frontend/server.py --mode public --port 5088
 
 # 家庭自用版（关闭限频 + 自定义归档目录）
 python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port 5088
@@ -106,7 +106,7 @@ python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port
 python home_edition/desktop/main_gui.py
 ```
 
-支持：输入链接、粘贴、浏览选择保存目录、一键生成、打开文件/目录、**一键打印**、**开启局域网共享**（后台启动 `0.0.0.0:5088` 并展示本机 IP 与访问二维码）。
+桌面端为现代 Web 壳：优先使用 **pywebview**（未安装时自动回退为本地服务 + 系统默认浏览器）加载 web_frontend 的精美卡片式 UI，100% 复用网页端界面（链接输入、Cookie 扫码/粘贴抽屉、在线预览、生成进度）。同时保留系统托盘、一键打印、AirPrint/AirDrop 共享、**开启局域网共享**（后台启动 `0.0.0.0:5088` 并展示本机 IP 与访问二维码）与关闭拦截。
 
 ### 4. 命令行（Linux Server / NAS）
 

@@ -3,7 +3,7 @@
 """小红书 Cookie 探活监控脚本。
 
 逻辑:
-  1. 优先请求本地服务 `http://127.0.0.1:8088/api/cookies/status`;
+  1. 优先请求本地服务 `http://127.0.0.1:5088/api/cookies/status`;
   2. 本地服务不可用时,回退直接读取 `web_frontend/data/cookies.json`
      并逐条探活(xiaohongshu.com/explore 是否含 loggedIn:true);
   3. 当 `valid == 0`(无任何有效 Cookie)时,经 Bark 推送告警。
@@ -25,7 +25,7 @@ import time
 import requests
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL_STATUS_URL = "http://127.0.0.1:8088/api/cookies/status"
+LOCAL_STATUS_URL = "http://127.0.0.1:5088/api/cookies/status"
 COOKIE_FILE = os.path.join(BASE_DIR, "web_frontend", "data", "cookies.json")
 STATE_FILE = os.path.join(BASE_DIR, "scripts", ".cookie_alert_state.json")
 

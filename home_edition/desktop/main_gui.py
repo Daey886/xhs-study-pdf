@@ -1,12 +1,13 @@
-"""Windows / macOS 桌面 GUI 主界面。
+"""Windows / macOS 桌面 GUI 主入口 (现代 Web 壳)。
 
-基于 tkinter 的轻量现代界面,包含:
-- 链接输入框 + 粘贴按钮;
-- 保存位置选择 (浏览按钮选择系统文件夹);
-- 生成按钮与进度状态反馈;
-- 完成后「打开文件」「打开目录」「一键打印」;
-- 「开启局域网共享」复选框:后台线程启动 Web 服务 (0.0.0.0:5088),
-  并展示本机局域网 IP 与访问二维码。
+彻底废弃原先简陋的灰底 tkinter 窗口,改为:
+1. 优先使用 pywebview 加载 web_frontend 的精美卡片式 Web UI;
+2. 未安装 pywebview 时,自动在后台启动本地 Web 服务并打开系统默认浏览器窗口;
+3. 系统托盘常驻 (tray.py),支持打印、局域网共享、关闭拦截。
+
+100% 复用 web_frontend/server.py 的玻璃拟态自适应卡片 UI(动态进度条、
+生成结果弹窗、在线阅读器、扫码/Cookie 抽屉),桌面端与局域网端看到同一套
+高颜值现代界面。
 
 依赖 core_engine 与 web_frontend.server;托盘交互由 tray.py 提供。
 """
@@ -21,340 +22,286 @@ import time
 import webbrowser
 
 # 允许以脚本直接运行,同时兼容打包后的包路径
-try:
-    from core_engine.extractor import Extractor
-    from core_engine.cleaner import ImageCleaner
-    from core_engine.pdf_builder import PDFBuilder
-except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    from core_engine.extractor import Extractor
-    from core_engine.cleaner import ImageCleaner
-    from core_engine.pdf_builder import PDFBuilder
+_BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _BASE not in sys.path:
+    sys.path.insert(0, _BASE)
 
-try:
-    from home_edition.desktop.tray import TrayController
-    from home_edition.auth.term_qr import TerminalQR
-except ImportError:
-    from tray import TrayController
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "auth"))
-    from term_qr import TerminalQR
+from home_edition.auth.term_qr import TerminalQR
 
 __all__ = ["XhsGuiApp", "main"]
 
 LAN_PORT = 5088
+LOCAL_HOST = "127.0.0.1"
+
+
+def _lan_ip() -> str:
+    """获取本机局域网 IP(跨网段绑定提示用)。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return LOCAL_HOST
 
 
 class XhsGuiApp:
-    """桌面 GUI 应用。"""
+    """桌面 GUI 应用:托管 Web 服务并弹出 Web 壳窗口。"""
 
     def __init__(self) -> None:
-        import tkinter as tk
-        import tkinter.ttk as ttk
-
-        self.tk = tk
-        self.ttk = ttk
-
-        self.root = tk.Tk()
-        self.root.title("小红书资料转 PDF — 家庭自用版")
-        self.root.geometry("560x460")
-        self.root.resizable(False, False)
-
-        self.extractor = Extractor()
         self.output_dir = os.path.expanduser("~/Downloads")
         self.server_thread: threading.Thread | None = None
+        self._server_ready = threading.Event()
         self._lan_running = False
+        self._lan_host = LOCAL_HOST
+        self._tray_started = False
 
-        self._build_ui()
-
-        self.tray = TrayController(
-            on_minimize=self._minimize_to_tray,
-            on_exit=self._quit,
-            on_show=self._restore,
-        )
-        self.root.protocol("WM_DELETE_WINDOW", lambda: self.tray.on_close(self.root))
-
-    # ------------------------------------------------------------------
-    # UI 构建
-    # ------------------------------------------------------------------
-    def _build_ui(self) -> None:
-        tk = self.tk
-        ttk = self.ttk
-
-        pad = {"padx": 16, "pady": 6}
-
-        # 标题
-        tk.Label(
-            self.root,
-            text="小红书试卷 / 课件转 PDF",
-            font=("Microsoft YaHei", 15, "bold"),
-        ).pack(pady=(20, 4))
-
-        # 链接输入区
-        frame = tk.Frame(self.root)
-        frame.pack(fill="x", **pad)
-        tk.Label(frame, text="小红书笔记链接:").pack(anchor="w")
-        self.link_var = tk.StringVar()
-        entry = tk.Entry(frame, textvariable=self.link_var, font=("Consolas", 10))
-        entry.pack(side="left", fill="x", expand=True, pady=(4, 0))
-        tk.Button(frame, text="粘贴", width=8, command=self._paste).pack(
-            side="left", padx=(6, 0), pady=(4, 0)
-        )
-
-        # 保存位置
-        dir_frame = tk.Frame(self.root)
-        dir_frame.pack(fill="x", **pad)
-        tk.Label(dir_frame, text="保存位置:").pack(anchor="w")
-        self.dir_var = tk.StringVar(value=self.output_dir)
-        tk.Entry(dir_frame, textvariable=self.dir_var).pack(
-            side="left", fill="x", expand=True, pady=(4, 0)
-        )
-        tk.Button(dir_frame, text="浏览", width=8, command=self._browse_dir).pack(
-            side="left", padx=(6, 0), pady=(4, 0)
-        )
-
-        # 局域网共享开关
-        self.lan_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            self.root,
-            text="开启局域网共享 (手机/平板可访问本机网页)",
-            variable=self.lan_var,
-            command=self._toggle_lan,
-        ).pack(anchor="w", **pad)
-
-        # 进度条与状态
-        self.progress = ttk.Progressbar(self.root, mode="indeterminate")
-        self.progress.pack(fill="x", **pad)
-        self.status_var = tk.StringVar(value="就绪")
-        tk.Label(self.root, textvariable=self.status_var, fg="#64748b").pack()
-
-        # 生成按钮
-        self.gen_btn = tk.Button(
-            self.root,
-            text="一键生成 PDF",
-            bg="#ff5a6e",
-            fg="white",
-            activebackground="#ff7a4d",
-            font=("Microsoft YaHei", 12, "bold"),
-            relief="flat",
-            padx=20,
-            pady=8,
-            command=self._generate,
-        )
-        self.gen_btn.pack(pady=(12, 6))
-
-        # 结果操作按钮
-        action_frame = tk.Frame(self.root)
-        action_frame.pack(pady=4)
-        self.open_file_btn = tk.Button(
-            action_frame, text="打开文件", width=12, state="disabled", command=self._open_file
-        )
-        self.open_file_btn.pack(side="left", padx=4)
-        self.open_dir_btn = tk.Button(
-            action_frame, text="打开目录", width=12, state="disabled", command=self._open_dir
-        )
-        self.open_dir_btn.pack(side="left", padx=4)
-        self.print_btn = tk.Button(
-            action_frame, text="一键打印", width=12, state="disabled", command=self._print
-        )
-        self.print_btn.pack(side="left", padx=4)
-
-        # 局域网地址显示
-        self.lan_info = tk.Label(self.root, text="", fg="#2563eb", font=("Consolas", 9))
-        self.lan_info.pack(pady=(4, 8))
-
-        self.last_pdf: str | None = None
-
-    # ------------------------------------------------------------------
-    # 交互回调
-    # ------------------------------------------------------------------
-    def _paste(self) -> None:
+        # 托盘与关闭拦截:必须在弹出窗口前构造好,供 on_close 使用
         try:
-            text = self.root.clipboard_get()
+            from home_edition.desktop.tray import TrayController
+
+            self.tray = TrayController(
+                on_minimize=self._minimize_to_tray,
+                on_exit=self._quit,
+                on_show=self._restore,
+            )
+            self._use_tray = True
         except Exception:
-            return
-        self.link_var.set(text.strip())
-
-    def _browse_dir(self) -> None:
-        from tkinter import filedialog
-
-        d = filedialog.askdirectory(initialdir=self.output_dir)
-        if d:
-            self.output_dir = d
-            self.dir_var.set(d)
-
-    def _set_status(self, msg: str) -> None:
-        self.status_var.set(msg)
-
-    def _toggle_lan(self) -> None:
-        if self.lan_var.get():
-            self._start_lan_server()
-        else:
-            self._stop_lan_server()
+            self.tray = None
+            self._use_tray = False
 
     # ------------------------------------------------------------------
-    # 生成
+    # 服务器托管
     # ------------------------------------------------------------------
-    def _generate(self) -> None:
-        url = self.link_var.get().strip()
-        if not url:
-            self._set_status("请先粘贴小红书链接")
-            return
+    def _start_server(self, host: str = LOCAL_HOST, port: int = LAN_PORT) -> None:
+        """在后台线程启动 web_frontend/server.py (lan 模式)。
 
-        output_dir = self.dir_var.get().strip() or self.output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        优先 in-process import(共享同一进程,打包后更可靠),失败则回退
+        子进程启动。归档目录通过环境变量 XHS_OUTPUT_DIR 传递给服务。
+        """
+        os.environ["RUN_MODE"] = "lan"
+        os.environ["XHS_OUTPUT_DIR"] = os.path.abspath(self.output_dir)
 
-        self.gen_btn.config(state="disabled")
-        self.progress.start(12)
-        self._set_status("正在解析笔记并下载图片...")
+        def serve() -> None:
+            started = self._start_server_inprocess(host, port)
+            if not started:
+                self._start_server_subprocess(host, port)
+            self._server_ready.set()
 
-        def worker() -> None:
+        self.server_thread = threading.Thread(target=serve, daemon=True)
+        self.server_thread.start()
+
+        # 等待服务就绪(最长 10 秒)
+        self._server_ready.wait(timeout=10)
+
+    def _start_server_inprocess(self, host: str, port: int) -> bool:
+        """in-process 启动 Flask:把 web_frontend 目录加入 sys.path 后 import。"""
+        try:
+            web_dir = os.path.join(_BASE, "web_frontend")
+            if web_dir not in sys.path:
+                sys.path.insert(0, web_dir)
+            import server as srv  # noqa: E402  (web_frontend/server.py)
+
+            srv.RUN_MODE = "lan"
+            srv.DOWNLOAD_DIR = os.path.abspath(self.output_dir)
+            os.makedirs(srv.DOWNLOAD_DIR, exist_ok=True)
+            self._flask_srv = srv
+            srv.app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
+            return True
+        except Exception as e:
+            print("in-process server start failed:", e, file=sys.stderr)
+            return False
+
+    def _start_server_subprocess(self, host: str, port: int) -> None:
+        """子进程启动 server.py(回退方案)。"""
+        import subprocess
+
+        web_dir = os.path.join(_BASE, "web_frontend")
+        server_path = os.path.join(web_dir, "server.py")
+        env = os.environ.copy()
+        env["RUN_MODE"] = "lan"
+        env["XHS_OUTPUT_DIR"] = os.path.abspath(self.output_dir)
+        subprocess.Popen(
+            [
+                sys.executable, server_path,
+                "--mode", "lan",
+                "--host", host,
+                "--port", str(port),
+                "--output-dir", os.path.abspath(self.output_dir),
+            ],
+            cwd=web_dir,
+            env=env,
+        )
+
+    def _wait_http(self, url: str, timeout: float = 8.0) -> bool:
+        """轮询等待本地 HTTP 服务可访问。"""
+        import urllib.request
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
             try:
-                note = self.extractor.parse_note(url)
-                if note.kind == "video":
-                    self._done_error("该笔记为纯视频笔记,暂不支持")
-                    return
-                if not note.images:
-                    self._done_error(
-                        "笔记不存在、已删除或未解析到图片" if note.missing else "未解析到无水印图片"
-                    )
-                    return
-                self._set_status("正在下载图片...")
-                local = self.extractor.download_images(note.images, output_dir)
-                if not local:
-                    self._done_error("图片下载失败")
-                    return
-                self._set_status("正在去杂并合成 A4 PDF...")
-                kept = ImageCleaner().clean(local, remove_files=True).kept
-                pdf_name = f"{note.title}.pdf"
-                pdf_path = os.path.join(output_dir, pdf_name)
-                PDFBuilder().build(kept)
-                import core_engine.pdf_builder as pb
+                urllib.request.urlopen(url, timeout=1)
+                return True
+            except Exception:
+                time.sleep(0.2)
+        return False
 
-                data = pb.PDFBuilder().build(kept)
-                with open(pdf_path, "wb") as f:
-                    f.write(data)
-                self.last_pdf = pdf_path
-                self._done_success(pdf_path)
-            except Exception as e:
-                self._done_error(f"生成失败:{e}")
+    # ------------------------------------------------------------------
+    # 窗口 (pywebview 或系统浏览器)
+    # ------------------------------------------------------------------
+    def _open_window(self, url: str) -> None:
+        """优先 pywebview 原生窗口,否则打开系统默认浏览器。"""
+        try:
+            import webview
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _done_success(self, pdf_path: str) -> None:
-        self.root.after(0, self._finish_ui, pdf_path, None)
-
-    def _done_error(self, msg: str) -> None:
-        self.root.after(0, self._finish_ui, None, msg)
-
-    def _finish_ui(self, pdf_path, error) -> None:
-        self.progress.stop()
-        self.gen_btn.config(state="normal")
-        if error:
-            self._set_status(error)
+            window = webview.create_window(
+                "小红书资料转 PDF — 家庭自用版",
+                url,
+                width=560,
+                height=780,
+                min_size=(420, 600),
+            )
+            # 拦截窗口关闭事件:交给托盘询问(最小化/退出)
+            window.events.closing += self._on_window_closing
+            self._webview_window = window
+            self._webview = webview
+            # 在 pywebview 主线程中启动托盘后进入事件循环
+            webview.start(self._on_webview_start, self._webview_window)
             return
-        self._set_status(f"完成:{os.path.basename(pdf_path)}")
-        self.open_file_btn.config(state="normal")
-        self.open_dir_btn.config(state="normal")
-        self.print_btn.config(state="normal")
+        except Exception:
+            pass
 
-    def _open_file(self) -> None:
-        if self.last_pdf and os.path.exists(self.last_pdf):
-            webbrowser.open(self.last_pdf)
+        # 回退:打开系统默认浏览器,托盘在后台常驻
+        webbrowser.open(url)
+        self._restore()  # 触发托盘启动
+        # 阻塞保持进程存活(托盘在后台线程运行)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            self._quit()
 
-    def _open_dir(self) -> None:
-        d = self.dir_var.get().strip() or self.output_dir
-        if os.path.isdir(d):
-            if sys.platform.startswith("win"):
-                os.startfile(d)
-            elif sys.platform == "darwin":
-                os.system(f'open "{d}"')
+    def _on_webview_start(self, *args) -> None:
+        """pywebview 启动后回调:启动系统托盘。"""
+        if self._use_tray and not self._tray_started:
+            self._tray_started = self.tray.start_tray()
+        self._print_lan_info()
+
+    def _on_window_closing(self) -> None:
+        """pywebview 窗口关闭事件:交给托盘控制器询问。"""
+        if self._use_tray:
+            # 无 tk 根窗口,直接走记忆选择逻辑
+            remembered = self.tray.load_remembered()
+            if remembered is not None:
+                self.tray._apply(remembered)
             else:
-                webbrowser.open("file://" + d)
+                # pywebview 下无法用 tk 弹窗,默认最小化到托盘并提示
+                self._minimize_to_tray()
+        else:
+            self._quit()
 
-    def _print(self) -> None:
-        if not self.last_pdf:
-            return
-        if sys.platform.startswith("win"):
-            from home_edition.desktop.platform.win_print import print_pdf
-        elif sys.platform == "darwin":
-            from home_edition.desktop.platform.mac_share import print_pdf
-        else:
-            self._set_status("当前平台不支持系统打印")
-            return
-        if print_pdf(self.last_pdf):
-            self._set_status("已发送到系统打印机")
-        else:
-            self._set_status("打印启动失败")
+    # ------------------------------------------------------------------
+    # 托盘 / 退出
+    # ------------------------------------------------------------------
+    def _minimize_to_tray(self) -> None:
+        """最小化到托盘:关闭/隐藏窗口,后台继续运行。"""
+        try:
+            wv = getattr(self, "_webview_window", None)
+            if wv is not None:
+                wv.hide()
+        except Exception:
+            pass
+        if self._use_tray and not self._tray_started:
+            self._tray_started = self.tray.start_tray()
+
+    def _restore(self) -> None:
+        """从托盘恢复窗口。"""
+        try:
+            wv = getattr(self, "_webview_window", None)
+            if wv is not None:
+                wv.show()
+        except Exception:
+            pass
+
+    def _quit(self) -> None:
+        """退出应用:停止服务并关闭窗口。"""
+        self._stop_lan_server()
+        try:
+            wv = getattr(self, "_webview_window", None)
+            if wv is not None:
+                wv.destroy()
+        except Exception:
+            pass
+        try:
+            os._exit(0)
+        except Exception:
+            sys.exit(0)
 
     # ------------------------------------------------------------------
     # 局域网共享
     # ------------------------------------------------------------------
-    def _start_lan_server(self) -> None:
-        if self._lan_running:
+    def _print_lan_info(self) -> None:
+        if not self._lan_running:
             return
-        self._lan_running = True
-
-        def serve() -> None:
-            os.environ["RUN_MODE"] = "lan"
-            os.environ["XHS_OUTPUT_DIR"] = self.dir_var.get() or self.output_dir
-            import subprocess
-
-            server_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "web_frontend",
-                "server.py",
-            )
-            subprocess.run(
-                [sys.executable, server_path, "--mode", "lan", "--port", str(LAN_PORT)],
-                cwd=os.path.dirname(server_path),
-            )
-
-        self.server_thread = threading.Thread(target=serve, daemon=True)
-        self.server_thread.start()
-        time.sleep(0.5)
-
-        ip = self._lan_ip()
-        url = f"http://{ip}:{LAN_PORT}"
-        self.lan_info.config(text=f"局域网访问地址:{url}\n请用手机浏览器访问")
-        print("LAN URL:", url)
-        # 打印终端二维码 (也可在此处展示图片二维码,终端降级为字符)
+        url = f"http://{self._lan_host}:{LAN_PORT}"
+        print("\n[局域网共享已开启]")
+        print("局域网访问地址:", url)
+        print("(请确保手机与电脑处于同一局域网)")
         try:
             qr = TerminalQR().render(url)
             print("扫码访问:\n" + qr)
         except Exception:
             pass
 
+    def _start_lan_server(self) -> None:
+        """开启局域网共享:在 0.0.0.0:5088 上重新绑定服务,跨网段可访问。"""
+        if self._lan_running:
+            return
+        self._lan_running = True
+        self._lan_host = _lan_ip()
+
+        # 重启服务以 0.0.0.0 绑定(默认 127.0.0.1 仅本机可访问)
+        self._stop_server_thread()
+        self._server_ready.clear()
+        self._start_server(host="0.0.0.0", port=LAN_PORT)
+        self._print_lan_info()
+
     def _stop_lan_server(self) -> None:
         self._lan_running = False
-        self.lan_info.config(text="")
 
-    @staticmethod
-    def _lan_ip() -> str:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
+    def _stop_server_thread(self) -> None:
+        """尽力停止已运行的 Flask 服务线程(不阻塞)。
+
+        局域网开关由「本机 127.0.0.1」切换为「0.0.0.0」时,需要重启服务线程
+        以重新绑定监听地址;in-process Flask 的 dev server 无法优雅关闭,
+        这里通过替换线程引用 + 让旧线程自然退出(daemon)来实现。
+        """
+        self.server_thread = None
 
     # ------------------------------------------------------------------
-    # 托盘 / 退出
+    # 打印 / 共享 (保留原生能力)
     # ------------------------------------------------------------------
-    def _minimize_to_tray(self) -> None:
-        self.root.withdraw()
-        self.tray.start_tray()
+    def print_pdf(self, pdf_path: str) -> bool:
+        """调用系统默认打印程序打印 PDF。"""
+        if not pdf_path or not os.path.isfile(pdf_path):
+            return False
+        if sys.platform.startswith("win"):
+            from home_edition.desktop.platform.win_print import print_pdf as _p
+        elif sys.platform == "darwin":
+            from home_edition.desktop.platform.mac_share import print_pdf as _p
+        else:
+            return False
+        return _p(pdf_path)
 
-    def _restore(self) -> None:
-        self.root.deiconify()
-
-    def _quit(self) -> None:
-        self._stop_lan_server()
-        self.root.destroy()
-
+    # ------------------------------------------------------------------
+    # 入口
+    # ------------------------------------------------------------------
     def run(self) -> None:
-        self.root.mainloop()
+        # 1) 先启动本机 Web 服务 (127.0.0.1)
+        self._start_server(host=LOCAL_HOST, port=LAN_PORT)
+        # 2) 打开 Web 壳窗口
+        self._open_window(f"http://{LOCAL_HOST}:{LAN_PORT}/")
 
 
 def main() -> None:
