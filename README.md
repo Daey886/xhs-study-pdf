@@ -1,6 +1,6 @@
 # 📚 小红书试卷/课件转 PDF 工具 (xhs-study-pdf)
 
-> **专为学习资料提取打造的纯净免登录小红书图文转 PDF 工具。**  
+> **专为学习资料提取打造的纯净小红书图文转 PDF 工具。**  
 > 一键提取小红书试卷、课件与学习笔记，启发式智能剔除广告杂图，生成高清标准 A4 PDF 文档。
 
 ---
@@ -8,87 +8,165 @@
 ## 💡 项目起因与初心
 
 小红书上有大量非常优质的中小学试卷、知识清单、复习思维导图和大学课件资料。但经常遇到以下痛点：
+
 1. **多张图片保存繁琐**：一篇笔记通常包含 6~18 张试卷图，手机逐张保存相册繁琐，难以直接打印。
-2. **牛皮癣广告杂图混入**：博主为了引流，常在试卷中间或末尾穿插 **“需要电子完整版置顶评论”**、**“加微信领资料”**、**“求点赞关注”** 的正方形广告卡片或推销插页。直接合并成 PDF 打印时，不仅浪费纸张墨水，还严重影响阅读体验。
+2. **牛皮癣广告杂图混入**：博主为了引流，常在试卷中间或末尾穿插 *"需要电子完整版置顶评论"*、*"加微信领资料"*、*"求点赞关注"* 的正方形广告卡片或推销插页。直接合并成 PDF 打印时，不仅浪费纸张墨水，还严重影响阅读体验。
 3. **现有工具过于笨重**：市面上的通用采集工具通常需要客户端打包安装、复杂的数据库持久化，或强制绑定账号登录。
 
-本项目因此而生：**做一个极简、开箱即用、免登录的 Web 提取站，让家长、老师和学生只需粘贴链接，即可自动过滤广告杂质，秒级生成干净的高清试卷 PDF！**
+本项目因此而生：**做一个极简、开箱即用的工具，让家长、老师和学生只需粘贴链接，即可自动过滤广告杂质，秒级生成干净的高清试卷 PDF！**
 
 ---
 
-## 🌟 核心特性与技术亮点
+## 🏗️ 工程架构
 
-- **纯免登录工具定位**：无需注册、无数据库、无个人隐私泄露风险。
-- **无模型本地启发式去杂（Heuristic Image Cleaner）**：
-  - **尺寸聚类分析（Dominant Size）**：自动统计整组试卷主导分辨率；
-  - **比例过滤（Aspect Ratio）**：自动剔除 $1:1$ 正方形引流图与横版长图；
-  - **HSV 色彩与亮度校验**：识别白底试卷特征，精准剔除彩色插画、灰色褶皱纸纹质感的博主广告卡片；
-  - **0 毫秒延时、零外部 API 依赖、不消耗大模型 Token 费用**。
-- **8 位稳定短链与在线阅读**：
-  - 自动生成 8 位幂等短码（如 `/s/628d3300`），告别因中文文件名 URL 编码导致的 180+ 字符超长链接；
-  - 内置符合 RFC 5987 规范的内联 PDF 在线阅读器（`/preview/<code_or_file>`），手机与 PC 端即点即看。
-- **生产级安全防线**：
-  - **防 SSRF 与凭证泄漏**：严格限制仅允许请求小红书官方域名（`xiaohongshu.com` / `xhslink.com`）；
-  - **防路径穿越**：所有下载与预览请求均受 `safe_join_under` 校验，杜绝任何 `../` 目录遍历；
-  - **单 IP 限频防护**：内置滑动窗口限流，防止算力被恶意刷爆；
-  - **屏蔽堆栈追踪**：生产环境异常不向外暴露 Python Traceback。
-- **自动化运维告警**：
-  - 内置 Bark 监控探活脚本（`scripts/check_cookies.py`），Cookie 失效时自动推送手机提醒（带 12h 防轰炸冷却）。
+本项目采用「核心算法库 + 统一 Web 引擎 + 平台包装层」三层架构，核心算法 100% 共享，全平台复用。
+
+```text
+xhs-study-pdf/
+├── core_engine/                # 公共核心算法库 (100% 共享)
+│   ├── cleaner.py              # 启发式去杂：尺寸聚类、剔除 1:1 广告图、HSV 白底识别
+│   ├── pdf_builder.py          # 标准 A4 试卷排版、DPI 校准、超清 PDF 合成
+│   └── extractor.py            # 笔记解析、短链重定向、图片并发下载
+│
+├── web_frontend/               # 统一 Web 引擎 (公网/局域网/NAS/Docker 共享页面)
+│   ├── server.py               # 支持 RUN_MODE (public / lan) + 自定义归档目录
+│   ├── qr_service.py           # 扫码登录 (playwright 驱动)
+│   └── ...                     # 成熟前端 UI (卡片界面/生成弹窗/扫码抽屉/在线预览)
+│
+├── home_edition/               # 家庭与桌面专属包装层
+│   ├── auth/
+│   │   ├── qr_login.py         # 本地单账号扫码 → 提取 web_session → 写 cookie.json
+│   │   └── term_qr.py          # Linux/SSH 纯终端 ANSI 字符二维码渲染
+│   ├── desktop/
+│   │   ├── main_gui.py         # Win/macOS GUI：输入/浏览保存路径/一键打印/局域网共享+二维码
+│   │   ├── tray.py             # 系统托盘 + 关闭弹窗 (最小化/退出 + 记住选择)
+│   │   └── platform/
+│   │       ├── win_print.py    # Windows 直调系统默认打印机
+│   │       └── mac_share.py    # macOS AirPrint 打印 + AirDrop 投送
+│   └── cli/
+│       └── main_cli.py         # Linux 命令行：-u/--url 单链接、--batch 批量、--serve Web
+│
+├── packaging/                  # 全平台构建配置
+│   ├── windows/                # PyInstaller 便携版 + Inno Setup 安装包
+│   ├── macos/                  # macOS Universal .dmg
+│   ├── fnos/                   # 飞牛 NAS fpk (manifest/cmd/config/wizard)
+│   └── docker/                 # 多阶段轻量跨架构镜像
+│
+├── .github/workflows/          # CI/CD：Windows/macOS/fnOS/Docker 自动构建 + 单元测试
+└── tests/                      # 全套单元测试
+```
 
 ---
 
-## 🛠️ 项目渊源与致谢
+## 🔀 双模式说明
 
-本项目底层的小红书基础 HTTP 请求与提取逻辑，最初灵感来源于开源项目 **[JoeanAmier/XHS-Downloader](https://github.com/JoeanAmier/XHS-Downloader)**。
+| 维度 | `public` 公网在线版 | `lan` 家庭自用版 |
+| --- | --- | --- |
+| Cookie | 中央 Cookie 池 (`cookies.json`) | 单账号本地 `cookie.json`（扫码一次持久化） |
+| 限频 | 启用单 IP 滑动窗口限频 | **关闭限频** |
+| 告警 | Bark 探活 | 无 |
+| 归档目录 | `web_frontend/downloads/` | 用户自定义目录 (`--output-dir`) |
+| 适用场景 | 公开部署、多人访问 | 单机/家庭局域网、NAS、Docker |
 
-我们在此基础上进行了**大幅重构与深度精简（减负 95%+）**：
-1. **剥离庞大依赖**：移除了原项目庞大的 GUI 界面、数据库持久化模块、多平台打包脚本及几十兆未使用的二进制静态资源；
-2. **重写轻量 Web 架构**：独立实现 Flask 异步并发引擎，打造轻量级微服务；
-3. **独创学习试卷管道**：新增了启发式试卷去杂引擎、RFC 5987 短链落地页、Systemd 守护与安全防护。
-
-在此对原作者 **JoeanAmier** 的开源探索表示诚挚感谢！
+两种模式通过环境变量或命令行参数区分，Web 前端页面 **100% 复用**。
 
 ---
 
-## 🚀 快速上手与部署指引
+## 🚀 快速上手
 
 ### 环境要求
-- Python 3.10+ (推荐 3.12+)
+- Python 3.10+（推荐 3.12+）
 - Linux / macOS / Windows
 
-### 1. 克隆代码并安装依赖
-```bash
-git clone https://github.com/Daey886/xhs-study-pdf.git
-cd xhs-study-pdf
+### 1. 安装依赖
 
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+```bash
 pip install flask requests img2pdf pillow pyyaml
+# 可选（扫码登录 + 终端二维码）
+pip install playwright && playwright install chromium
 ```
 
-### 2. 配置小红书 Cookie
-在 `web_frontend/` 目录下准备 `cookies.json`：
-```json
-[
-  {
-    "id": "account_1",
-    "cookie": "web_session=你的小红书网页端Cookie;",
-    "status": "valid"
-  }
-]
-```
-> ⚠️ `cookies.json` 包含敏感凭据，已被 `.gitignore` 严格忽略，严禁提交到代码仓库！
+### 2. 启动统一 Web 服务
 
-### 3. 启动服务
 ```bash
-cd web_frontend
-python server.py
+# 公网在线版（默认，启用限频）
+python web_frontend/server.py --mode public --port 8088
+
+# 家庭自用版（关闭限频 + 自定义归档目录）
+python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port 5088
 ```
-默认监听在 `http://0.0.0.0:8088`。
+
+等价环境变量写法：`RUN_MODE=lan XHS_OUTPUT_DIR=/path python web_frontend/server.py`。
+
+> 首次使用请在页面底部点击「Cookie」→「获取登录二维码」，扫码登录后自动写入本地 `cookie.json`。
+
+### 3. 桌面 GUI（Windows / macOS）
+
+```bash
+python home_edition/desktop/main_gui.py
+```
+
+支持：输入链接、粘贴、浏览选择保存目录、一键生成、打开文件/目录、**一键打印**、**开启局域网共享**（后台启动 `0.0.0.0:5088` 并展示本机 IP 与访问二维码）。
+
+### 4. 命令行（Linux Server / NAS）
+
+```bash
+python home_edition/cli/main_cli.py -u "https://www.xiaohongshu.com/explore/xxx"
+python home_edition/cli/main_cli.py --batch urls.txt
+python home_edition/cli/main_cli.py --serve --port 5088   # 常驻 Web
+python home_edition/cli/main_cli.py --login                # 终端扫码登录 (ANSI 二维码)
+```
 
 ---
 
-## 🛡️ 免责声明 (Disclaimer)
+## 🐳 Docker 部署
+
+```bash
+cd packaging/docker
+docker compose up -d
+# 自定义输出目录通过 volumes 挂载 (见 docker-compose.yml 的 ./downloads:/output)
+```
+
+镜像支持 `linux/amd64` 与 `linux/arm64`，端口 `5088`。
+
+---
+
+## 🖥️ 飞牛 NAS (fnOS)
+
+`packaging/fnos/` 提供了完整的 fpk 打包工程：
+
+- `manifest`：应用元数据（架构、权限、Web 配置）；
+- `cmd/main`：`start` / `stop` / `status` 控制脚本；
+- `config/resource`：资源与权限配置；
+- `wizard/config.json`：安装向导 —— **引导用户自选归档目录**（严禁硬编码存储路径）。
+
+---
+
+## 🛠️ 开发与测试
+
+```bash
+# 运行全部单元测试
+python -m pytest tests/ -v
+
+# 语法校验
+python -m py_compile core_engine/*.py home_edition/**/*.py web_frontend/server.py
+```
+
+测试覆盖：`cleaner`（去杂聚类/比例/HSV）、`pdf_builder`（A4 排版/DPI/EXIF 容错）、`extractor`（笔记 ID/域名白名单/图片 token）、`term_qr`（ANSI 二维码）、`qr_login`（cookie 持久化）、`tray`（关闭交互记忆）、`server`（RUN_MODE/参数解析）。
+
+---
+
+## 🔒 核心安全设计
+
+- **防 SSRF**：严格限制仅请求小红书官方域名（`xiaohongshu.com` / `xhslink.com`）；
+- **防路径穿越**：所有下载/预览请求经 `safe_join_under` 校验；
+- **单 IP 限频**（仅 public 模式）：滑动窗口限流，防止算力被刷爆；
+- **屏蔽堆栈**：生产异常不向外暴露 Traceback；
+- **敏感凭证隔离**：`cookies.json` / `cookie.json` 均被 `.gitignore` 忽略，严禁提交。
+
+---
+
+## 🛡️ 免责声明
 
 1. 本项目仅供个人学习、教育研究与技术交流使用，严禁用于任何商业用途、大规模爬虫抓取或非法牟利行为。
 2. 小红书平台所有图文、课件、试卷资料的著作权与知识产权均归**原作者及版权所有方**所有。请在获取后 24 小时内删除，并严格遵守国家相关版权保护法律法规。

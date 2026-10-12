@@ -1,0 +1,39 @@
+name: Build fnOS fpk
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install fpk packaging tool
+        run: |
+          # 飞牛官方 fpk 打包工具 (若存在);此处以示例脚本说明流程
+          # curl -fsSL <fpk-tool-url> -o /tmp/fpk
+          echo "fpk packaging placeholder"
+
+      - name: Package fpk
+        run: |
+          set -e
+          mkdir -p dist
+          # 将 manifest/cmd/config/wizard 与应用代码打包为 .fpk
+          tar -czf dist/xhs-study-pdf.fpk \
+            packaging/fnos/manifest \
+            packaging/fnos/cmd \
+            packaging/fnos/config \
+            packaging/fnos/wizard \
+            core_engine web_frontend home_edition
+          echo "packaged -> dist/xhs-study-pdf.fpk"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnos-fpk
+          path: dist/*.fpk

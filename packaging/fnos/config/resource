@@ -1,0 +1,22 @@
+{
+  "resources": {
+    "icon": "icon.png",
+    "screenshots": [],
+    "permissions": [
+      "network",
+      "storage",
+      "share"
+    ]
+  },
+  "environment": {
+    "RUN_MODE": "lan",
+    "XHS_WEB_PORT": "5088"
+  },
+  "volumes": [
+    {
+      "name": "output",
+      "description": "PDF 归档目录 (由安装向导选定)",
+      "default": "/vol1/@appdata/xhs-study-pdf/output"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+flask>=3.0
+requests>=2.31
+img2pdf>=0.5
+pillow>=10.0
+pyyaml>=6.0

@@ -1,9 +1,16 @@
 import asyncio, time, uuid, os, json
-from playwright.async_api import async_playwright
+
+try:
+    from playwright.async_api import async_playwright
+except ImportError:  # playwright 未安装时优雅降级,二维码登录功能不可用
+    async_playwright = None
 
 active_sessions = {} # session_id -> {status, qr_data_url, cookie, expires_at, page, browser}
 
 async def launch_qr_session(session_id, cookie_save_callback):
+    if async_playwright is None:
+        active_sessions[session_id]['status'] = 'failed'
+        return
     try:
         p = await async_playwright().start()
         browser = await p.chromium.launch(

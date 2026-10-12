@@ -10,8 +10,20 @@ app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 
-BASE_DIR = "/opt/projects/xiaohongshu-downloader/web_frontend"
-DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+# --- 运行模式配置 (支持环境变量 RUN_MODE + 启动参数 --mode/--output-dir) ---
+# RUN_MODE 可选值:
+#   public : 公网在线版 (默认) —— 启用单 IP 限频、中央 Cookie 池、分享落地页
+#   lan    : 家庭/内网自用版 —— 关闭限频、单账号本地 cookie.json、直接写入用户归档目录
+RUN_MODE = os.environ.get("RUN_MODE", "public").strip().lower()
+if RUN_MODE not in ("public", "lan"):
+    RUN_MODE = "public"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 归档目录:lan 模式下可通过 --output-dir / XHS_OUTPUT_DIR 指定,
+# public 模式默认仍落在 web_frontend/downloads 下。
+_DEFAULT_DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+DOWNLOAD_DIR = os.environ.get("XHS_OUTPUT_DIR") or _DEFAULT_DOWNLOAD_DIR
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -24,7 +36,12 @@ RATE_LIMIT_PER_MINUTE = 10     # 单 IP 每分钟最多 10 次 /api/convert
 DOWNLOAD_TTL_DAYS = 7          # downloads/ 目录文件保留 7 天
 FILE_TTL_DAYS = 7              # 历史临时/旧文件保留 7 天
 
-COOKIE_FILE = os.path.join(DATA_DIR, "cookies.json")
+# lan 模式使用本地单账号 cookie.json (扁平结构),public 模式使用中央 cookie 池
+if RUN_MODE == "lan":
+    COOKIE_FILE = os.path.join(DATA_DIR, "cookie.json")
+else:
+    COOKIE_FILE = os.path.join(DATA_DIR, "cookies.json")
+
 # 笔记缓存：同一笔记重复解析直接复用上次的 PDF，不再请求小红书。
 # 放在 data/ 下独立于 downloads/，不受每天 0 点的“3 天清理”影响。
 NOTE_CACHE_DIR = os.path.join(DATA_DIR, "note_cache")
@@ -231,15 +248,41 @@ convert_limiter = _RateLimiter()
 
 # --- 1. Cookie 管理与轮询池 ---
 def load_cookies():
+    """读取 Cookie。lan 模式读取扁平单账号 cookie.json,public 读取中央池。
+
+    lan 模式下若 cookie.json 记录为 {cookie, web_session, ...} 扁平结构,
+    统一归一化为池结构 [{cookie, status}] 供后续逻辑复用。
+    """
     if not os.path.exists(COOKIE_FILE):
         return []
     try:
         with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return []
+    if isinstance(data, dict):
+        # 扁平单账号 (lan) 结构归一化
+        cookie_str = data.get('cookie') or ''
+        if not cookie_str and data.get('web_session'):
+            cookie_str = 'web_session=' + data['web_session']
+        if not cookie_str:
+            return []
+        return [{
+            'id': data.get('id', 'local'),
+            'cookie': cookie_str,
+            'status': data.get('status', 'valid'),
+            'added_at': data.get('added_at', time.time()),
+            'user_id': data.get('user_id'),
+        }]
+    return data if isinstance(data, list) else []
 
 def save_cookies(cookies):
+    """写回 Cookie。lan 模式回写扁平单账号结构,public 写回池结构。"""
+    if RUN_MODE == 'lan':
+        flat = cookies[0] if cookies else {}
+        with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(flat, f, ensure_ascii=False, indent=2)
+        return
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cookies, f, ensure_ascii=False, indent=2)
 
@@ -327,6 +370,12 @@ def get_next_cookie():
     global cookie_index
     with cookie_lock:
         cookies = load_cookies()
+        if RUN_MODE == 'lan':
+            # 家庭自用版:单账号,直接返回唯一一条 cookie(不区分 valid/invalid,
+            # 由 verify_cookie_health 现场校验)
+            if not cookies:
+                return None
+            return cookies[0].get('cookie')
         valid = [c for c in cookies if c.get('status') == 'valid']
         if not valid:
             return None
@@ -1287,16 +1336,18 @@ def parse_note(url, cookie=None):
 
 @app.route('/api/convert', methods=['POST'])
 def convert():
-    # 0) 单 IP 限频:防止刷爆小红书 Cookie 导致封号
-    allowed, retry_after = convert_limiter.allow(client_ip())
-    if not allowed:
-        resp = jsonify({
-            'success': False,
-            'error': f'请求过于频繁,请 {retry_after} 秒后再试(每分钟最多 {RATE_LIMIT_PER_MINUTE} 次)'
-        })
-        resp.status_code = 429
-        resp.headers['Retry-After'] = str(retry_after)
-        return resp
+    # 0) 单 IP 限频 (仅 public 模式):防止刷爆小红书 Cookie 导致封号。
+    #    lan 家庭自用版关闭限频。
+    if RUN_MODE == 'public':
+        allowed, retry_after = convert_limiter.allow(client_ip())
+        if not allowed:
+            resp = jsonify({
+                'success': False,
+                'error': f'请求过于频繁,请 {retry_after} 秒后再试(每分钟最多 {RATE_LIMIT_PER_MINUTE} 次)'
+            })
+            resp.status_code = 429
+            resp.headers['Retry-After'] = str(retry_after)
+            return resp
 
     # 用户使用时先轻量同步/刷新 Cookie 状态
     try:
@@ -2001,5 +2052,46 @@ def handle_uncaught(e):
         return jsonify({'success': False, 'error': '服务器内部错误,请稍后重试'}), 500
     return handle_500(e)
 
+def _parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="xhs-study-pdf 统一 Web 服务 (公网/局域网/NAS/Docker 共享)"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("public", "lan"),
+        default=RUN_MODE,
+        help="运行模式:public 公网在线版(默认, 启用限频) / lan 家庭自用版(关闭限频)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=os.environ.get("XHS_OUTPUT_DIR") or _DEFAULT_DOWNLOAD_DIR,
+        help="归档目录(生成的 PDF/ZIP 存放位置),lan 模式推荐指定用户目录",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="监听地址(默认 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8088, help="监听端口(默认 8088)")
+    return parser.parse_args()
+
+
+def run():
+    """程序入口:解析参数并应用运行模式/归档目录后启动 Flask。"""
+    args = _parse_args()
+    global RUN_MODE, DOWNLOAD_DIR
+
+    # 运行模式:参数优先级高于环境变量
+    if args.mode in ("public", "lan"):
+        RUN_MODE = args.mode
+
+    # 归档目录:参数优先级高于环境变量
+    DOWNLOAD_DIR = os.path.abspath(args.output_dir or _DEFAULT_DOWNLOAD_DIR)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+    print(f"[xhs-study-pdf] RUN_MODE = {RUN_MODE}")
+    print(f"[xhs-study-pdf] output_dir = {DOWNLOAD_DIR}")
+    print(f"[xhs-study-pdf] listening on http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port)
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8088)
+    run()
