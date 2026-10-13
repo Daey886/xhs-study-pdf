@@ -953,7 +953,12 @@ function startConvert() {
         btn.disabled = false;
         btn.innerText = '一键合成 PDF';
         if (!res.success) {
-            showToast(res.error || '合成失败', true);
+            const errMsg = res.error || '合成失败';
+            showToast(errMsg, true);
+            // 若错误提示与需要登录相关，自动弹出登录引导
+            if (res.need_login || errMsg.indexOf('登录') !== -1) {
+                setTimeout(() => { openDrawer(); }, 1200);
+            }
             return;
         }
         showToast(res.cached ? '已复用上次解析的结果' : '合成完成!');
@@ -1406,12 +1411,15 @@ def parse_note(url, cookie=None):
     elif kind is None and clean_imgs:
         kind = 'image'
 
-    # 笔记被删除/私密/链接无效:既无图片也无法判定类型时,匹配页面专属文案
+    # 笔记被删除/私密/链接无效/需要登录
+    need_login = False
     missing = False
     if not clean_imgs and kind is None:
         missing = note_missing_in_html(html)
+        if not missing and ('登录' in html or '/login' in getattr(resp, 'url', '')):
+            need_login = True
 
-    return title, clean_imgs, kind, missing
+    return title, clean_imgs, kind, missing, need_login
 
 @app.route('/api/convert', methods=['POST'])
 def convert():
@@ -1478,7 +1486,7 @@ def convert():
                 'cached': True
             })
         cookie = get_next_cookie()
-        title, imgs, kind, missing = parse_note(u, cookie)
+        title, imgs, kind, missing, need_login = parse_note(u, cookie)
         # 纯视频笔记:友好拦截,不做试卷合成
         if kind == 'video':
             return jsonify({'success': False, 'error': MSG_VIDEO_NOTE})
@@ -1486,6 +1494,8 @@ def convert():
             # 笔记删除/私密/链接无效:直接给出明确友好提示
             if missing:
                 return jsonify({'success': False, 'error': MSG_NOTE_MISSING})
+            if need_login:
+                return jsonify({'success': False, 'error': '该笔记需登录后查看，请在弹出的登录窗口中扫码', 'need_login': True})
             # 解析失败不一定是 Cookie 失效(可能是笔记删除/链接错误),
             # 先做真实健康检查,确认失效才标红,避免误伤
             if cookie and not verify_cookie_health(cookie):
@@ -1553,7 +1563,7 @@ def convert():
             generated_pdfs.append((note_pdf_path, note_pdf_name))
             continue
         cookie = get_next_cookie()
-        title, imgs, kind, missing = parse_note(u, cookie)
+        title, imgs, kind, missing, need_login = parse_note(u, cookie)
         # 纯视频笔记 / 已删除私密笔记:跳过并累计原因,不透传 500
         if kind == 'video':
             skipped_video += 1

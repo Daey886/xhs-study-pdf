@@ -1,104 +1,85 @@
 # 📚 小红书试卷/课件转 PDF 工具 (xhs-study-pdf)
 
 > **专为学习资料提取打造的纯净小红书图文转 PDF 工具。**  
-> 一键提取小红书试卷、课件与学习笔记，启发式智能剔除广告杂图，生成高清标准 A4 PDF 文档。
+> 一键提取小红书试卷、课件与学习笔记，智能过滤牛皮癣广告杂图，秒级生成高清标准 A4 PDF 文档。
 
 ---
 
-## 💡 项目起因与初心
+## 💡 项目背景与解决痛点
 
-小红书上有大量非常优质的中小学试卷、知识清单、复习思维导图和大学课件资料。但经常遇到以下痛点：
+小红书上有大量非常优质的中小学试卷、知识清单、复习思维导图和大学课件资料。但在日常保存打印时常遇到以下痛点：
 
-1. **多张图片保存繁琐**：一篇笔记通常包含 6~18 张试卷图，手机逐张保存相册繁琐，难以直接打印。
-2. **牛皮癣广告杂图混入**：博主为了引流，常在试卷中间或末尾穿插 *"需要电子完整版置顶评论"*、*"加微信领资料"*、*"求点赞关注"* 的正方形广告卡片或推销插页。直接合并成 PDF 打印时，不仅浪费纸张墨水，还严重影响阅读体验。
-3. **现有工具过于笨重**：市面上的通用采集工具通常需要客户端打包安装、复杂的数据库持久化，或强制绑定账号登录。
+1. **多张图片保存繁琐**：一篇笔记通常包含 6~18 张试卷图，手机逐张保存相册繁琐，难以直接整理和打印。
+2. **牛皮癣广告杂图混入**：博主为了引流，常在试卷中间或末尾穿插 *"需要电子完整版置顶评论"*、*"加微信领资料"*、*"求点赞关注"* 的正方形广告卡片或推销插页。直接合并打印不仅浪费纸墨，还严重影响阅读体验。
+3. **短链与重定向处理繁琐**：移动端分享口令携带各种跟踪参数与短链（如 `xhslink.com`、`xhslink.cn`），常规工具常因域名未适配或重定向未解构导致解析失败。
 
-本项目因此而生：**做一个极简、开箱即用的工具，让家长、老师和学生只需粘贴链接，即可自动过滤广告杂质，秒级生成干净的高清试卷 PDF！**
+本项目因此而生：**做一个开箱即用的纯净工具，只需粘贴小红书分享口令或链接，即可自动过滤广告杂质，一键秒级导出高清试卷 PDF！**
 
 ---
 
-## 🏗️ 工程架构
+## ✨ 核心特性
 
-本项目采用「核心算法库 + 统一 Web 引擎 + 平台包装层」三层架构，核心算法 100% 共享，全平台复用。
+- **智能去杂与尺寸聚类**：内置启发式算法，自动聚类试卷主体宽高比，智能剔除 1:1 引流广告卡片及非试卷杂图。
+- **免登录游客解析支持**：支持公开图文笔记无状态直接解析；遇到受限笔记或风控时自动引导底部扫码登录。
+- **短链与全域名兼容**：原生支持 `xiaohongshu.com`、`xhslink.com` 以及国内最新 `xhslink.cn` 分享口令自动识别与多跳重定向解构。
+- **纯净扫码认证**：基于 Playwright 无头浏览器的全自动二维码获取与状态监听，安全长效保持登录态，无需复杂手动配置。
+- **标准 A4 PDF 输出**：支持 DPI 自动校准与 EXIF 旋转容错，保证打印清晰度与页面版式规范。
+- **开箱即用与跨平台**：提供开箱即用的 Web 服务界面，同时支持桌面客户端与 Linux 命令行模式。
+
+---
+
+## 🏗️ 工程目录结构
 
 ```text
 xhs-study-pdf/
 ├── core_engine/                # 公共核心算法库 (100% 共享)
 │   ├── cleaner.py              # 启发式去杂：尺寸聚类、剔除 1:1 广告图、HSV 白底识别
 │   ├── pdf_builder.py          # 标准 A4 试卷排版、DPI 校准、超清 PDF 合成
-│   └── extractor.py            # 笔记解析、短链重定向、图片并发下载
+│   └── extractor.py            # 笔记解析、短链追踪、域名白名单与元数据提取
 │
-├── web_frontend/               # 统一 Web 引擎 (公网/局域网/NAS/Docker 共享页面)
-│   ├── server.py               # 支持 RUN_MODE (public / lan) + 自定义归档目录
-│   ├── qr_service.py           # 扫码登录 (playwright 驱动)
-│   └── ...                     # 成熟前端 UI (卡片界面/生成弹窗/扫码抽屉/在线预览)
+├── web_frontend/               # 统一 Web 引擎 (前端页面 + 服务端 API)
+│   ├── server.py               # Web 服务核心 (支持 public / lan 模式)
+│   ├── qr_service.py           # Playwright 驱动的扫码登录服务
+│   └── data/                   # 缓存与登录凭证目录
 │
-├── home_edition/               # 家庭与桌面专属包装层
-│   ├── auth/
-│   │   ├── qr_login.py         # 本地单账号扫码 → 提取 web_session → 写 cookie.json
-│   │   └── term_qr.py          # Linux/SSH 纯终端 ANSI 字符二维码渲染
-│   ├── desktop/
-│   │   ├── main_gui.py         # Win/macOS GUI：输入/浏览保存路径/一键打印/局域网共享+二维码
-│   │   ├── tray.py             # 系统托盘 + 关闭弹窗 (最小化/退出 + 记住选择)
-│   │   └── platform/
-│   │       ├── win_print.py    # Windows 直调系统默认打印机
-│   │       └── mac_share.py    # macOS AirPrint 打印 + AirDrop 投送
-│   └── cli/
-│       └── main_cli.py         # Linux 命令行：-u/--url 单链接、--batch 批量、--serve Web
+├── home_edition/               # 桌面与本地包装层
+│   ├── desktop/                # 桌面端 GUI (Web 视图封装 + 系统托盘)
+│   ├── auth/                   # 终端/本地扫码鉴权组件
+│   └── cli/                    # 命令行工具
 │
-├── packaging/                  # 全平台构建配置
-│   ├── windows/                # PyInstaller 便携版 + Inno Setup 安装包
-│   ├── macos/                  # macOS Universal .dmg
-│   ├── fnos/                   # 飞牛 NAS fpk (manifest/cmd/config/wizard)
-│   └── docker/                 # 多阶段轻量跨架构镜像
-│
-├── .github/workflows/          # CI/CD：Windows/macOS/fnOS/Docker 自动构建 + 单元测试
-└── tests/                      # 全套单元测试
+├── tests/                      # 单元测试套件
+└── .github/workflows/          # GitHub Actions 自动化测试流 (CI Tests)
 ```
-
----
-
-## 🔀 双模式说明
-
-| 维度 | `public` 公网在线版 | `lan` 家庭自用版 |
-| --- | --- | --- |
-| Cookie | 中央 Cookie 池 (`cookies.json`) | 单账号本地 `cookie.json`（扫码一次持久化） |
-| 限频 | 启用单 IP 滑动窗口限频 | **关闭限频** |
-| 告警 | Bark 探活 | 无 |
-| 归档目录 | `web_frontend/downloads/` | 用户自定义目录 (`--output-dir`) |
-| 适用场景 | 公开部署、多人访问 | 单机/家庭局域网、NAS、Docker |
-
-两种模式通过环境变量或命令行参数区分，Web 前端页面 **100% 复用**。
 
 ---
 
 ## 🚀 快速上手
 
 ### 环境要求
-- Python 3.10+（推荐 3.12+）
-- Linux / macOS / Windows
+- Python 3.10+（推荐 Python 3.12+）
+- 支持 Linux / macOS / Windows
 
 ### 1. 安装依赖
 
 ```bash
-pip install flask requests img2pdf pillow pyyaml
-# 可选（扫码登录 + 终端二维码）
-pip install playwright && playwright install chromium
+pip install flask requests img2pdf pillow pyyaml pytest
+
+# 安装 Playwright 及 Chromium 驱动（用于扫码登录功能）
+pip install playwright
+playwright install chromium
 ```
 
 ### 2. 启动统一 Web 服务
 
 ```bash
-# 公网在线版（默认，启用限频）
-python web_frontend/server.py --mode public --port 5088
+# 启动公网/在线服务模式 (支持多用户使用，默认端口 8088)
+python web_frontend/server.py --port 8088
 
-# 家庭自用版（关闭限频 + 自定义归档目录）
-python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port 5088
+# 启动家庭/局域网模式 (关闭限频，自定义下载保存路径)
+python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port 8088
 ```
 
-等价环境变量写法：`RUN_MODE=lan XHS_OUTPUT_DIR=/path python web_frontend/server.py`。
-
-> 首次使用请在页面底部点击「Cookie」→「获取登录二维码」，扫码登录后自动写入本地 `cookie.json`。
+启动后在浏览器打开 `http://localhost:8088` 即可使用。
 
 ### 3. 桌面 GUI（Windows / macOS）
 
@@ -106,63 +87,35 @@ python web_frontend/server.py --mode lan --output-dir ~/Downloads/xhs_pdf --port
 python home_edition/desktop/main_gui.py
 ```
 
-桌面端为现代 Web 壳：优先使用 **pywebview**（未安装时自动回退为本地服务 + 系统默认浏览器）加载 web_frontend 的精美卡片式 UI，100% 复用网页端界面（链接输入、Cookie 扫码/粘贴抽屉、在线预览、生成进度）。同时保留系统托盘、一键打印、AirPrint/AirDrop 共享、**开启局域网共享**（后台启动 `0.0.0.0:5088` 并展示本机 IP 与访问二维码）与关闭拦截。
-
-### 4. 命令行（Linux Server / NAS）
+### 4. 命令行（Linux / Server）
 
 ```bash
+# 单链接直接提取
 python home_edition/cli/main_cli.py -u "https://www.xiaohongshu.com/explore/xxx"
+
+# 批量提取
 python home_edition/cli/main_cli.py --batch urls.txt
-python home_edition/cli/main_cli.py --serve --port 5088   # 常驻 Web
-python home_edition/cli/main_cli.py --login                # 终端扫码登录 (ANSI 二维码)
 ```
 
 ---
 
-## 🐳 Docker 部署
+## 🛠️ 自动化测试
 
-```bash
-cd packaging/docker
-docker compose up -d
-# 自定义输出目录通过 volumes 挂载 (见 docker-compose.yml 的 ./downloads:/output)
-```
-
-镜像支持 `linux/amd64` 与 `linux/arm64`，端口 `5088`。
-
----
-
-## 🖥️ 飞牛 NAS (fnOS)
-
-`packaging/fnos/` 提供了完整的 fpk 打包工程：
-
-- `manifest`：应用元数据（架构、权限、Web 配置）；
-- `cmd/main`：`start` / `stop` / `status` 控制脚本；
-- `config/resource`：资源与权限配置；
-- `wizard/config.json`：安装向导 —— **引导用户自选归档目录**（严禁硬编码存储路径）。
-
----
-
-## 🛠️ 开发与测试
+项目附带完整的单元测试，涵盖尺寸聚类、PDF 构建、提取器规则与服务端接口配置：
 
 ```bash
 # 运行全部单元测试
-python -m pytest tests/ -v
-
-# 语法校验
-python -m py_compile core_engine/*.py home_edition/**/*.py web_frontend/server.py
+pytest tests/ -v
 ```
-
-测试覆盖：`cleaner`（去杂聚类/比例/HSV）、`pdf_builder`（A4 排版/DPI/EXIF 容错）、`extractor`（笔记 ID/域名白名单/图片 token）、`term_qr`（ANSI 二维码）、`qr_login`（cookie 持久化）、`tray`（关闭交互记忆）、`server`（RUN_MODE/参数解析）。
 
 ---
 
 ## 🔒 核心安全设计
 
-- **防 SSRF**：严格限制仅请求小红书官方域名（`xiaohongshu.com` / `xhslink.com`）；
-- **防路径穿越**：所有下载/预览请求经 `safe_join_under` 校验；
-- **单 IP 限频**（仅 public 模式）：滑动窗口限流，防止算力被刷爆；
-- **屏蔽堆栈**：生产异常不向外暴露 Traceback；
-- **敏感凭证隔离**：`cookies.json` / `cookie.json` 均被 `.gitignore` 忽略，严禁提交。
+- **防 SSRF 与安全白名单**：严格限制仅请求小红书官方合法域名（`xiaohongshu.com`、`xhslink.com`、`xhslink.cn`）；
+- **防路径穿越**：所有下载与预览请求经严格安全路径校验，杜绝目录穿越；
+- **单 IP 限频（public 模式）**：滑动窗口限流机制，保护算力与服务稳定；
+- **敏感凭证隔离**：登录凭证严格保存在本地，通过 `.gitignore` 排除，严禁提交至版本库。
 
 ---
 
@@ -176,4 +129,4 @@ python -m py_compile core_engine/*.py home_edition/**/*.py web_frontend/server.p
 
 ## 💬 意见与反馈
 
-欢迎在 GitHub 提交 [Issue](https://github.com/Daey886/xhs-study-pdf/issues) 或 Pull Request 共同改进！
+欢迎在 GitHub 提交 [Issue](https://github.com/Daey886/xhs-study-pdf/issues) 或 Pull Request！
