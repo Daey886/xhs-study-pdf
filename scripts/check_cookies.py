@@ -25,7 +25,7 @@ import time
 import requests
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL_STATUS_URL = "http://127.0.0.1:5088/api/cookies/status"
+LOCAL_STATUS_URL = "http://127.0.0.1:8088/api/cookies/status"
 COOKIE_FILE = os.path.join(BASE_DIR, "web_frontend", "data", "cookies.json")
 STATE_FILE = os.path.join(BASE_DIR, "scripts", ".cookie_alert_state.json")
 

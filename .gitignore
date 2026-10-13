@@ -49,4 +49,5 @@ build/
 .idea/
 .vscode/
 .DS_Store
-Thumbs.dbcore_engine/
+Thumbs.db
+scripts/.cookie_alert_state.json
