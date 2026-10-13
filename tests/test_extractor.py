@@ -41,6 +41,7 @@ def test_is_allowed_url():
 def test_allowed_hosts_constant():
     assert "xiaohongshu.com" in ALLOWED_SHARE_HOSTS
     assert "xhslink.com" in ALLOWED_SHARE_HOSTS
+    assert "xhslink.cn" in ALLOWED_SHARE_HOSTS
 
 
 def test_extract_image_token():

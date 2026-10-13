@@ -17,7 +17,7 @@ import os
 import re
 import uuid
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import requests
 
@@ -31,7 +31,7 @@ __all__ = [
 
 NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item)/([0-9a-fA-F]{24})")
 
-ALLOWED_SHARE_HOSTS = ("xiaohongshu.com", "xhslink.com")
+ALLOWED_SHARE_HOSTS = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
 
 PC_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -226,8 +226,37 @@ class Extractor:
 
     def parse_note(self, url: str, cookie: Optional[str] = None) -> NoteInfo:
         """解析单篇笔记，返回 NoteInfo。"""
+        # 预处理短链与登录重定向链接
+        real_url = url
+        try:
+            p_init = urlparse(url)
+            host_init = (p_init.hostname or "").lower()
+            if "xhslink" in host_init:
+                r_hop = requests.get(
+                    url,
+                    headers={"User-Agent": self.user_agent},
+                    allow_redirects=False,
+                    timeout=self.timeout,
+                )
+                if r_hop.status_code in (301, 302, 303, 307, 308):
+                    loc = r_hop.headers.get("Location", "")
+                    if loc:
+                        real_url = loc
+        except Exception:
+            pass
+
+        try:
+            p_check = urlparse(real_url)
+            if "/login" in p_check.path and "redirectPath=" in p_check.query:
+                qs = parse_qs(p_check.query)
+                red_path = qs.get("redirectPath", [None])[0]
+                if red_path:
+                    real_url = red_path
+        except Exception:
+            pass
+
         resp = requests.get(
-            url,
+            real_url,
             headers=self._headers(cookie),
             allow_redirects=True,
             timeout=self.timeout,

@@ -1,6 +1,6 @@
 from qr_service import start_qr_task, active_sessions
 import os, sys, time, re, threading, requests, img2pdf, zipfile, json, uuid, html, hashlib
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, parse_qs
 from datetime import datetime
 from flask import Flask, render_template_string, request, send_file, jsonify, abort
 
@@ -29,8 +29,8 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- 安全常量 ---
-# 允许的小红书合法域名(含常见 CDN 子域兜底,但转换入口只放行这两个主域)
-ALLOWED_SHARE_HOSTS = ('xiaohongshu.com', 'xhslink.com')
+# 允许的小红书合法域名(含常见 CDN 子域兜底,但转换入口只放行合法主域)
+ALLOWED_SHARE_HOSTS = ('xiaohongshu.com', 'xhslink.com', 'xhslink.cn')
 MAX_BATCH_LINKS = 5            # 单次批量最多 5 条,防止超长数组耗尽内存
 RATE_LIMIT_PER_MINUTE = 10     # 单 IP 每分钟最多 10 次 /api/convert
 DOWNLOAD_TTL_DAYS = 7          # downloads/ 目录文件保留 7 天
@@ -828,21 +828,6 @@ HTML_PAGE = """
         <div id="qrPlaceholder" style="width:160px;height:160px;border-radius:8px;margin:0 auto 8px;background:#eee;"></div>
         <div class="qr-desc" id="qrStatusText">请使用小红书 App 扫描上方二维码</div>
     </div>
-    <div style="height:1px;background:#eef1f5;margin:20px 0 16px;"></div>
-    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">手动填入 / 粘贴 Cookie</div>
-    <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-bottom:10px;">
-        扫码超时或被风控时,可直接粘贴浏览器里的 <b>web_session</b> 或完整 Cookie 串(无需扫码)。
-    </div>
-    <textarea id="manualCookieInput" rows="3" placeholder="粘贴 web_session=xxxx 或完整 Cookie: a1=...; web_session=..." style="width:100%;height:70px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:12.5px;resize:vertical;outline:none;background:#f8fafc;box-sizing:border-box;"></textarea>
-    <div style="display:flex;gap:8px;margin-top:10px;">
-        <button class="btn-submit" style="background:#fff;color:#2563eb;border:1.5px solid #d6e3f5;flex:1;" onclick="pasteCookie()">📋 一键粘贴</button>
-        <button class="btn-submit" style="flex:1;" onclick="saveManualCookie()">保存并验活</button>
-    </div>
-    <div style="font-size:12px;color:#16a34a;margin-top:10px;display:none;" id="manualCookieResult"></div>
-    <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-top:12px;background:#f8fafc;border-radius:10px;padding:10px 12px;">
-        <b>如何获取 Cookie?</b><br>
-        电脑浏览器登录小红书后,按 F12 打开开发者工具 →「应用/Application」→「Cookies」→ 复制 <b>web_session</b> 的值即可;或复制整段 Cookie 字符串粘贴到上方。
-    </div>
 </div>
 
 <script>
@@ -1081,9 +1066,9 @@ function getLoginQr() {
         .then(r => r.json())
         .then(data => {
             if (!data.success) {
-                qrText.innerText = '扫码接口被风控/受限: ' + (data.error || '生成超时') + ',请改用下方「手动填入 Cookie」';
+                qrText.innerText = '获取二维码失败: ' + (data.error || '超时，请重试');
                 document.getElementById('qrPlaceholder').style.display = 'none';
-                showToast('扫码超时或风控拦截,请改用下方「手动粘贴 Cookie」模式', true);
+                showToast('获取二维码失败: ' + (data.error || '超时'), true);
                 return;
             }
             qrImg.src = data.qr_url;
@@ -1350,7 +1335,33 @@ def parse_note(url, cookie=None):
     if cookie:
         headers['Cookie'] = cookie
 
-    resp = requests.get(url, headers=headers, allow_redirects=True, timeout=15)
+    # 预处理短链与登录重定向链接:
+    # 1. 若为短链(如 xhslink.cn / xhslink.com), 优先单步请求获取真实重定向地址
+    # 2. 若直接重定向到了 /login?redirectPath=..., 提取实际的笔记地址
+    real_url = url
+    try:
+        p_init = urlparse(url)
+        host_init = (p_init.hostname or '').lower()
+        if 'xhslink' in host_init:
+            r_hop = requests.get(url, headers={'User-Agent': PC_UA}, allow_redirects=False, timeout=10)
+            if r_hop.status_code in (301, 302, 303, 307, 308):
+                loc = r_hop.headers.get('Location', '')
+                if loc:
+                    real_url = loc
+    except Exception:
+        pass
+
+    try:
+        p_check = urlparse(real_url)
+        if '/login' in p_check.path and 'redirectPath=' in p_check.query:
+            qs = parse_qs(p_check.query)
+            red_path = qs.get('redirectPath', [None])[0]
+            if red_path:
+                real_url = red_path
+    except Exception:
+        pass
+
+    resp = requests.get(real_url, headers=headers, allow_redirects=True, timeout=15)
     html = resp.text
 
     # 标题:优先 INITIAL_STATE,回退 <title>
